@@ -7,21 +7,39 @@ import connectDB from "./backend/db.js";  // ✅ Ensure correct import
 
 dotenv.config();
 const app = express();
-app.use(bodyParser.json());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 
 // Middleware: Verify GitHub Webhook Signature
 function verifyGitHubSignature(req, res, next) {
-    const signature = req.headers["x-hub-signature-256"];
-    const payload = JSON.stringify(req.body);
-    const hmac = crypto.createHmac("sha256", process.env.GITHUB_WEBHOOK_SECRET);
-    hmac.update(payload);
-    const expectedSignature = `sha256=${hmac.digest("hex")}`;
-
-    if (signature !== expectedSignature) {
-        return res.status(401).send("❌ Invalid webhook signature.");
+    const secret = process.env.GITHUB_SECRET;
+    
+    if (!secret) {
+        console.error("❌ GITHUB_SECRET is missing!");
+        return res.status(500).send("Server misconfiguration");
     }
+
+    const signature = req.headers['x-hub-signature-256'];
+    
+    if (!signature) {
+        console.error("❌ No signature in request!");
+        return res.status(400).send("Missing signature");
+    }
+
+    const hmac = crypto.createHmac('sha256', secret);
+    hmac.update(JSON.stringify(req.body));
+    const digest = `sha256=${hmac.digest('hex')}`;
+
+    if (signature !== digest) {
+        console.error("❌ Webhook signature mismatch!");
+        return res.status(403).send("Invalid signature");
+    }
+
+    console.log("✅ Webhook signature verified!");
     next();
 }
+
 
 // Webhook Endpoint (with verification)
 app.post("/webhook", verifyGitHubSignature, githubWebhookHandler);

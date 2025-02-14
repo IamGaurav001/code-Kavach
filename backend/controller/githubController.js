@@ -1,11 +1,14 @@
 import crypto from "crypto";
+import express from "express";
 import axios from "axios";
 import dotenv from "dotenv";
 import { analyzeCode } from "../utils/aiHelper.js";
-import { getLatestCommitSHA } from "../githubHelper.js"; 
-import { savePRReview } from "../dbController.js"; 
+import { getLatestCommitSHA } from "../githubHelper.js"; // Ensure correct import path
+import { savePRReview } from "../dbController.js";
+const app = express();
 
 dotenv.config();
+app.use(express.json()); 
 
 
 export function githubWebhookHandler(req, res) {
@@ -19,9 +22,18 @@ export function githubWebhookHandler(req, res) {
     }
 
     const { action, pull_request } = req.body;
+
+    if (!pull_request) {
+        console.error("❌ Error: No pull request data received in webhook!");
+        return res.status(400).send("Bad Request: Missing pull request data.");
+    }
+
+    console.log("🔍 Debug: Webhook Received for PR:", pull_request.number);
+
     if (action === "opened" || action === "synchronize") {
         processPR(pull_request);
     }
+
     res.sendStatus(200);
 }
 
@@ -29,101 +41,67 @@ export function githubWebhookHandler(req, res) {
  * Process Pull Request
  */
 async function processPR(pr) {
-  console.log(`🔹 Processing PR: #${pr.number} in ${pr.base.repo.full_name}`);
-
-  try {
-      // ✅ Fetch PR diff
-      const repoFullName = pr.base.repo.full_name;
-      const prNumber = pr.number;
-      const githubToken = process.env.GITHUB_TOKEN;
-
-      const response = await axios.get(
-          `https://api.github.com/repos/${repoFullName}/pulls/${prNumber}`,
-          {
-              headers: {
-                  Authorization: `token ${githubToken}`,
-                  Accept: "application/vnd.github.v3.diff",
-              },
-          }
-      );
-
-      if (!response || !response.data) {
-          throw new Error("❌ GitHub API returned an invalid response.");
-      }
-
-      let diffData = response.data;
-      console.log("✅ Full Raw Diff Data:\n", diffData);
-
-      diffData = diffData.replace(/\r/g, "").trim();
-
-      if (!diffData.includes("diff --git")) {
-          throw new Error("❌ PR Diff Data is invalid or malformed.");
-      }
-
-      const reviewComments = await analyzeCode(diffData);
-      console.log("✅ AI Review Generated:", reviewComments);
-
-      await savePRReview(prNumber, repoFullName, reviewComments);
-
-      const commitSHA = await getLatestCommitSHA(repoFullName, pr.head.ref);
-      if (!commitSHA) {
-          throw new Error("❌ Unable to fetch latest commit SHA!");
-      }
-
-      for (const comment of reviewComments) {
-          await postInlineComment(
-              pr.base.repo.owner.login,
-              pr.base.repo.name,
-              prNumber,
-              comment.path,
-              comment.line,
-              commitSHA,
-              comment.issue
-          );
-      }
-
-  } catch (error) {
-      console.error("❌ Error Processing PR:", error.response?.data || error.message);
-  }
-}
-
-
-
-async function acceptFix(repoFullName, prNumber, fixes) {
-    const githubToken = process.env.GITHUB_TOKEN;
-    const branch = "fix-ai-suggestions";
-    const commitMessage = "🤖 Auto-fix suggested by AI Review Bot";
-
     try {
-        for (const fix of fixes) {
-            const { filename, lineNumber, fixContent } = fix;
+        if (!pr || !pr.number) {
+            throw new Error("❌ PR Object is invalid! Check webhook payload.");
+        }
 
-            const { data: file } = await axios.get(
-                `https://api.github.com/repos/${repoFullName}/contents/${filename}`,
-                { headers: { Authorization: `token ${githubToken}` } }
-            );
+        const repoFullName = pr.base.repo.full_name;
+        const prNumber = pr.number;
+        const githubToken = process.env.GITHUB_TOKEN;
 
-            const content = Buffer.from(file.content, 'base64').toString('utf8').split("\n");
-            content[lineNumber - 1] = fixContent;
-            const newContent = Buffer.from(content.join("\n")).toString('base64');
+        console.log("🔍 Debug: PR Number:", prNumber);
+        console.log("🔍 Debug: PR Head Ref:", pr.head.ref);
 
-            await axios.put(
-                `https://api.github.com/repos/${repoFullName}/contents/${filename}`,
-                {
-                    message: commitMessage,
-                    content: newContent,
-                    sha: file.sha,
-                    branch,
+        const response = await axios.get(
+            `https://api.github.com/repos/${repoFullName}/pulls/${prNumber}`,
+            {
+                headers: {
+                    Authorization: `token ${githubToken}`,
+                    Accept: "application/vnd.github.v3.diff",
                 },
-                { headers: { Authorization: `token ${githubToken}` } }
-            );
+            }
+        );
 
-            console.log(`✅ Fix Applied to ${filename}: ${commitMessage}`);
+        if (!response || !response.data) {
+            throw new Error("❌ GitHub API returned an invalid response.");
+        }
+
+        let diffData = response.data;
+        console.log("✅ Full Raw Diff Data:\n", diffData);
+
+        diffData = diffData.replace(/\r/g, "").trim();
+
+        if (!diffData.includes("diff --git")) {
+            throw new Error("❌ PR Diff Data is invalid or malformed.");
+        }
+
+        const reviewComments = await analyzeCode(diffData);
+        console.log("✅ AI Review Generated:", reviewComments);
+
+        await savePRReview(prNumber, repoFullName, reviewComments);
+
+        const commitSHA = await getLatestCommitSHA(repoFullName, pr.head.ref, prNumber);
+        if (!commitSHA) {
+            throw new Error("❌ Unable to fetch latest commit SHA!");
+        }
+
+        for (const comment of reviewComments) {
+            await postInlineComment(
+                pr.base.repo.owner.login,
+                pr.base.repo.name,
+                prNumber,
+                comment.path,
+                comment.line,
+                commitSHA,
+                comment.issue
+            );
         }
     } catch (error) {
-        console.error("❌ Error Applying Fix:", error.response?.data || error.message);
+        console.error("❌ Error Processing PR:", error.response?.data || error.message);
     }
 }
+
 
 
 export async function postInlineComment(owner, repo, prNumber, filePath, line, commitSHA, comment) {
@@ -143,12 +121,12 @@ export async function postInlineComment(owner, repo, prNumber, filePath, line, c
             path: filePath,
             line: line,
             commit_id: commitSHA,
-            side: "RIGHT"
+            side: "RIGHT",
         };
 
         const headers = {
             Authorization: `token ${GITHUB_TOKEN}`,
-            Accept: "application/vnd.github.v3+json"
+            Accept: "application/vnd.github.v3+json",
         };
 
         const response = await axios.post(url, payload, { headers });
@@ -160,20 +138,22 @@ export async function postInlineComment(owner, repo, prNumber, filePath, line, c
     }
 }
 
-
 export async function postSummaryComment(owner, repo, prNumber, reviewComments) {
     try {
         const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
-        const summary = `### 🤖 AI Review Summary\n\n${reviewComments.map(c => 
-            `- **${c.issue}** (File: \`${c.path}\`, Line ${c.line})\n  - 💡 Suggestion: ${c.suggestion}`
-        ).join("\n\n")}`;
+        const summary = `### 🤖 AI Review Summary\n\n${reviewComments
+            .map(
+                (c) =>
+                    `- **${c.issue}** (File: \`${c.path}\`, Line ${c.line})\n  - 💡 Suggestion: ${c.suggestion}`
+            )
+            .join("\n\n")}`;
 
         const url = `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`;
 
-        await axios.post(url, { body: summary }, 
-            { headers: { Authorization: `token ${GITHUB_TOKEN}` } }
-        );
+        await axios.post(url, { body: summary }, {
+            headers: { Authorization: `token ${GITHUB_TOKEN}` },
+        });
 
         console.log("✅ Summary Comment Posted Successfully!");
     } catch (error) {

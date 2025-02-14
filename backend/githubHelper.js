@@ -1,14 +1,6 @@
 import axios from "axios";
 
-/**
- * Applies an AI-generated fix to a file in a GitHub Pull Request.
- *
- * @param {string} repoOwner - GitHub repository owner.
- * @param {string} repoName - GitHub repository name.
- * @param {number} prNumber - Pull Request number.
- * @param {string} filePath - Path of the file to modify.
- * @param {string} newCode - Updated code content.
- */
+
 export async function applyFixToPR(repoOwner, repoName, prNumber, filePath, newCode) {
     const githubToken = process.env.GITHUB_TOKEN;
 

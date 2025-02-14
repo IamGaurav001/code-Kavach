@@ -3,15 +3,13 @@ import dotenv from "dotenv";
 import bodyParser from "body-parser";
 import crypto from "crypto";
 import { githubWebhookHandler } from "./backend/controller/githubController.js";
-import connectDB from "./backend/db.js";  // ✅ Ensure correct import
-
+import connectDB from "./backend/db.js"; 
 dotenv.config();
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 
-// Middleware: Verify GitHub Webhook Signature
 function verifyGitHubSignature(req, res, next) {
     const secret = process.env.GITHUB_SECRET;
     
@@ -41,7 +39,6 @@ function verifyGitHubSignature(req, res, next) {
 }
 
 
-// Webhook Endpoint (with verification)
 app.post("/webhook", verifyGitHubSignature, githubWebhookHandler);
 
 // Connect Database

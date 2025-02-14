@@ -1,18 +1,17 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { formatAIComment } from "../utils/formatAIComment.js";
+import axios from "axios";
+
 import dotenv from "dotenv";
 
 dotenv.config();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-/**
- * Analyze GitHub PR code diff using Gemini AI.
- * @param {string} codeDiff - The raw GitHub diff data.
- * @returns {Array} - Array of objects containing issues, suggestions, and file details.
- */
+
 async function analyzeCode(codeDiff) {
     try {
         const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+        
 
         const cleanedCode = codeDiff
             .split("\n")
@@ -20,58 +19,69 @@ async function analyzeCode(codeDiff) {
             .join("\n");
 
         const prompt = `
-        Review this GitHub PR code and return issues **strictly in valid JSON format**.
-        Do not include \`\`\`json or any markdown formatting.  
-        The JSON should be an array of objects, each having:
-        - **path** (string)
-        - **line** (number)
-        - **issue** (string)
-        - **suggestion** (string) (If no fix is available, return "No suggestion provided.")
-        If no issues are found, return \`[]\`.
+You are an AI code reviewer. Analyze the following Git diff and provide code review suggestions.
+For each suggestion, include:
+1. Issue description
+2. Suggested fix
+3. File path
+4. Line number
 
-        Code: ${cleanedCode}
-        `;
+Return your response as a JSON array.
+
+Git Diff:
+\`\`\`
+${diffData}
+\`\`\`
+`;
+
 
         const response = await model.generateContent(prompt);
+        console.log("🔍 RAW AI RESPONSE:", JSON.stringify(response, null, 2));
         let aiResponse = response?.response?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
 
         if (!aiResponse) {
             console.warn("⚠️ Gemini returned an empty response.");
-            return []; // Return empty array instead of crashing
+            return [];
         }
 
         try {
-            // 1️⃣ Remove ```json and similar markdown before parsing
-            const cleanedResponse = aiResponse.replace(/```json|```|json/gi, '').trim();
-
-            // 2️⃣ Extract valid JSON portion
+            // ✅ Remove Markdown like ```json
+            const cleanedResponse = aiResponse.replace(/```json|```/gi, "").trim();
+        
+            // ✅ Extract valid JSON
             const jsonStartIndex = cleanedResponse.indexOf("[");
             const jsonEndIndex = cleanedResponse.lastIndexOf("]");
-
+        
             if (jsonStartIndex >= 0 && jsonEndIndex >= 0) {
                 aiResponse = cleanedResponse.substring(jsonStartIndex, jsonEndIndex + 1);
             }
-
+        
+            // ✅ Parse JSON safely
             let parsedData = JSON.parse(aiResponse);
-
-            // 3️⃣ Ensure suggestions are always present
+        
+            // ✅ Ensure suggestions are always present
             parsedData = parsedData.map(comment => ({
                 ...comment,
                 suggestion: comment.suggestion || "No suggestion provided."
             }));
-
+        
             return parsedData;
         } catch (jsonError) {
             console.warn("⚠️ JSON parsing failed:", jsonError.message);
+            return [];
         }
+        
 
         console.warn("⚠️ Gemini response is not valid JSON. Returning an empty array.");
-        return []; // Return empty array as a fallback
+        return [];
 
     } catch (error) {
         console.error("❌ Gemini API Error:", error.message || error);
         return [];
     }
 }
+
+
+
 
 export { analyzeCode, formatAIComment };

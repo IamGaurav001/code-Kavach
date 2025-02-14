@@ -2,14 +2,12 @@ import crypto from "crypto";
 import axios from "axios";
 import dotenv from "dotenv";
 import { analyzeCode } from "../utils/aiHelper.js";
-import { getLatestCommitSHA } from "../githubHelper.js";
-import { savePRReview } from "../dbController.js"; // ✅ Import database function
+import { getLatestCommitSHA } from "../githubHelper.js"; 
+import { savePRReview } from "../dbController.js"; 
 
 dotenv.config();
 
-/*
- * GitHub Webhook Handler
- */
+
 export function githubWebhookHandler(req, res) {
     const signature = `sha256=${crypto
         .createHmac("sha256", process.env.GITHUB_SECRET)
@@ -31,92 +29,121 @@ export function githubWebhookHandler(req, res) {
  * Process Pull Request
  */
 async function processPR(pr) {
-    console.log(`🔹 Processing PR: #${pr.number} in ${pr.base.repo.full_name}`);
-    
-    try {
-        const { data: diffData } = await axios.get(pr.diff_url);
-        console.log("✅ Diff Fetched Successfully");
+  console.log(`🔹 Processing PR: #${pr.number} in ${pr.base.repo.full_name}`);
 
-        const reviewComments = await analyzeCode(diffData);
+  try {
+      // ✅ Fetch PR diff
+      const repoFullName = pr.base.repo.full_name;
+      const prNumber = pr.number;
+      const githubToken = process.env.GITHUB_TOKEN;
 
-        if (!Array.isArray(reviewComments)) {
-            throw new Error("❌ Invalid response: reviewComments is not an array.");
-        }
+      const response = await axios.get(
+          `https://api.github.com/repos/${repoFullName}/pulls/${prNumber}`,
+          {
+              headers: {
+                  Authorization: `token ${githubToken}`,
+                  Accept: "application/vnd.github.v3.diff",
+              },
+          }
+      );
 
-        // ✅ Save PR review in MongoDB
-        await savePRReview(pr.number, pr.base.repo.full_name, reviewComments);
+      if (!response || !response.data) {
+          throw new Error("❌ GitHub API returned an invalid response.");
+      }
 
-        // ✅ Post inline comments
-        for (const comment of reviewComments) {
-            if (!comment.line || !comment.issue || !comment.suggestion || !comment.filePath) {
-                console.error("❌ Skipping invalid comment data:", comment);
-                continue;
-            }
+      let diffData = response.data;
+      console.log("✅ Full Raw Diff Data:\n", diffData);
 
-            await postInlineComment(
-                pr.base.repo.owner.login,
-                pr.base.repo.name,
-                pr.number,
-                comment.filePath,  // ✅ Ensure file path is provided
-                comment.line,
-                comment.issue + "\n\n💡 Suggested Fix:\n" + comment.suggestion
-            );
-        }
+      diffData = diffData.replace(/\r/g, "").trim();
 
-    } catch (error) {
-        console.error("❌ Error Processing PR:", error.response?.data || error.message);
-    }
+      if (!diffData.includes("diff --git")) {
+          throw new Error("❌ PR Diff Data is invalid or malformed.");
+      }
+
+      const reviewComments = await analyzeCode(diffData);
+      console.log("✅ AI Review Generated:", reviewComments);
+
+      await savePRReview(prNumber, repoFullName, reviewComments);
+
+      const commitSHA = await getLatestCommitSHA(repoFullName, pr.head.ref);
+      if (!commitSHA) {
+          throw new Error("❌ Unable to fetch latest commit SHA!");
+      }
+
+      for (const comment of reviewComments) {
+          await postInlineComment(
+              pr.base.repo.owner.login,
+              pr.base.repo.name,
+              prNumber,
+              comment.path,
+              comment.line,
+              commitSHA,
+              comment.issue
+          );
+      }
+
+  } catch (error) {
+      console.error("❌ Error Processing PR:", error.response?.data || error.message);
+  }
 }
 
-/**
- * Apply AI-Suggested Fix
- */
-async function acceptFix(repoFullName, prNumber, filename, lineNumber, fixContent) {
+
+
+async function acceptFix(repoFullName, prNumber, fixes) {
     const githubToken = process.env.GITHUB_TOKEN;
     const branch = "fix-ai-suggestions";
     const commitMessage = "🤖 Auto-fix suggested by AI Review Bot";
 
     try {
-        const { data: file } = await axios.get(
-            `https://api.github.com/repos/${repoFullName}/contents/${filename}`,
-            { headers: { Authorization: `token ${githubToken}` } }
-        );
+        for (const fix of fixes) {
+            const { filename, lineNumber, fixContent } = fix;
 
-        const content = Buffer.from(file.content, 'base64').toString('utf8').split("\n");
-        content[lineNumber - 1] = fixContent;
-        const newContent = Buffer.from(content.join("\n")).toString('base64');
+            const { data: file } = await axios.get(
+                `https://api.github.com/repos/${repoFullName}/contents/${filename}`,
+                { headers: { Authorization: `token ${githubToken}` } }
+            );
 
-        await axios.put(
-            `https://api.github.com/repos/${repoFullName}/contents/${filename}`,
-            {
-                message: commitMessage,
-                content: newContent,
-                sha: file.sha,
-                branch,
-            },
-            { headers: { Authorization: `token ${githubToken}` } }
-        );
+            const content = Buffer.from(file.content, 'base64').toString('utf8').split("\n");
+            content[lineNumber - 1] = fixContent;
+            const newContent = Buffer.from(content.join("\n")).toString('base64');
 
-        console.log(`✅ Fix Applied Automatically: ${commitMessage}`);
+            await axios.put(
+                `https://api.github.com/repos/${repoFullName}/contents/${filename}`,
+                {
+                    message: commitMessage,
+                    content: newContent,
+                    sha: file.sha,
+                    branch,
+                },
+                { headers: { Authorization: `token ${githubToken}` } }
+            );
+
+            console.log(`✅ Fix Applied to ${filename}: ${commitMessage}`);
+        }
     } catch (error) {
         console.error("❌ Error Applying Fix:", error.response?.data || error.message);
     }
 }
 
-/**
- * Post Inline Comment on PR
- */
-export async function postInlineComment(owner, repo, prNumber, filePath, line, comment) {
+
+export async function postInlineComment(owner, repo, prNumber, filePath, line, commitSHA, comment) {
     try {
         const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
+        if (!commitSHA) {
+            throw new Error("❌ commitSHA is missing! Cannot post inline comment.");
+        }
+
         const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}/comments`;
-        
+
+        console.log(`📌 Posting comment at ${filePath}, Line ${line}, Commit ${commitSHA}`);
+
         const payload = {
             body: comment,
-            path: filePath,   // ✅ Ensure path is a valid file string (e.g., "src/index.js")
-            line: line,       // ✅ Ensure line is an integer (code line number)
-            side: "RIGHT"     // ✅ Required for PR review comments
+            path: filePath,
+            line: line,
+            commit_id: commitSHA,
+            side: "RIGHT"
         };
 
         const headers = {
@@ -130,5 +157,26 @@ export async function postInlineComment(owner, repo, prNumber, filePath, line, c
         return response.data;
     } catch (error) {
         console.error("❌ Error Posting Inline Comment:", error.response?.data || error.message);
+    }
+}
+
+
+export async function postSummaryComment(owner, repo, prNumber, reviewComments) {
+    try {
+        const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+
+        const summary = `### 🤖 AI Review Summary\n\n${reviewComments.map(c => 
+            `- **${c.issue}** (File: \`${c.path}\`, Line ${c.line})\n  - 💡 Suggestion: ${c.suggestion}`
+        ).join("\n\n")}`;
+
+        const url = `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`;
+
+        await axios.post(url, { body: summary }, 
+            { headers: { Authorization: `token ${GITHUB_TOKEN}` } }
+        );
+
+        console.log("✅ Summary Comment Posted Successfully!");
+    } catch (error) {
+        console.error("❌ Error Posting Summary Comment:", error.response?.data || error.message);
     }
 }

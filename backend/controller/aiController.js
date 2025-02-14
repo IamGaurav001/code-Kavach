@@ -10,7 +10,6 @@ async function analyzePullRequest(prNumber, repoOwner, repoName, token) {
         const { data: diff } = await axios.get(diffUrl, { headers });
 
         if (!diff) {
-            console.warn("⚠️ Empty diff received.");
             return "No changes detected in the PR.";
         }
 

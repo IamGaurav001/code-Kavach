@@ -40,36 +40,22 @@ export async function applyFixToPR(repoOwner, repoName, prNumber, filePath, newC
     }
 }
 
-/**
- * Fetches the latest commit SHA for a given PR.
- *
- * @param {string} repoFullName - GitHub repository full name (e.g., "owner/repo").
- * @param {number} prNumber - Pull Request number.
- * @returns {Promise<string | null>} - Latest commit SHA or null if failed.
- */
 export async function getLatestCommitSHA(repoFullName, prNumber) {
-    const githubToken = process.env.GITHUB_TOKEN;
-
-    if (!githubToken) {
-        console.error("❌ GITHUB_TOKEN is missing. Please check your environment variables.");
-        return null;
-    }
-
-    const apiUrl = `https://api.github.com/repos/${repoFullName}/pulls/${prNumber}/commits`;
-
     try {
-        const { data: commits } = await axios.get(apiUrl, {
-            headers: { Authorization: `Bearer ${githubToken}` },
-        });
+        const githubToken = process.env.GITHUB_TOKEN;
 
-        if (!commits.length) {
-            console.warn("⚠️ No commits found for the given PR.");
-            return null;
+        const response = await axios.get(
+            `https://api.github.com/repos/${repoFullName}/pulls/${prNumber}/commits`,
+            { headers: { Authorization: `token ${githubToken}` } }
+        );
+
+        if (!response.data || response.data.length === 0) {
+            throw new Error("No commits found for this PR.");
         }
 
-        const latestCommitSHA = commits[commits.length - 1].sha;
-        console.log(`✅ Latest Commit SHA for PR #${prNumber}: ${latestCommitSHA}`);
-        return latestCommitSHA;
+        const latestCommit = response.data[response.data.length - 1];
+        return latestCommit.sha;
+
     } catch (error) {
         console.error("❌ Error Fetching Commit SHA:", error.response?.data || error.message);
         return null;

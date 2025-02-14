@@ -19,9 +19,9 @@ async function analyzePullRequest(prNumber, repoOwner, repoName, token) {
         return formatAIComment("AI Code Review", aiFeedback);
         
     } catch (error) {
-        console.error("❌ Error analyzing PR:", error.response?.data || error.message);
         return "AI review failed due to an error.";
     }
 }
+
 
 export { analyzePullRequest };
